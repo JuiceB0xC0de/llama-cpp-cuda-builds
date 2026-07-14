@@ -39,6 +39,7 @@ jobs:
           cmake -S /src/llama.cpp -B /build/llama.cpp -G Ninja \
             -DGGML_CUDA=ON \
             -DCMAKE_CUDA_ARCHITECTURES=80 \
+            -DCMAKE_EXE_LINKER_FLAGS=-Wl,-rpath-link,/usr/local/cuda/targets/x86_64-linux/lib/stubs \
             -DGGML_NATIVE=OFF \
             -DLLAMA_CURL=OFF \
             -DCMAKE_BUILD_TYPE=Release
