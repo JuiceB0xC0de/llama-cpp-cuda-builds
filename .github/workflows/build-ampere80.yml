@@ -1,0 +1,68 @@
+name: Build llama.cpp CUDA 12.4 Ampere
+
+on:
+workflow_dispatch:
+push:
+    branches: [main]
+    paths:
+    - ".github/workflows/build-ampere80.yml"
+
+permissions:
+contents: read
+
+env:
+LLAMA_CPP_REF: b9637
+ARTIFACT_NAME: llama-cpp-cuda12-ampere80
+
+jobs:
+build:
+    runs-on: ubuntu-latest
+    container:
+    image: nvidia/cuda:12.4.1-devel-ubuntu22.04
+
+    steps:
+    - name: Install build tools
+        run: |
+        apt-get update
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates cmake g++ git make ninja-build
+        rm -rf /var/lib/apt/lists/*
+
+    - name: Fetch pinned llama.cpp source
+        run: |
+        git clone --depth 1 --branch "${LLAMA_CPP_REF}" \
+            https://github.com/ggml-org/llama.cpp.git /src/llama.cpp
+        git -C /src/llama.cpp rev-parse HEAD | tee source-commit.txt
+
+    - name: Build CUDA sm_80 binaries
+        run: |
+        cmake -S /src/llama.cpp -B /build/llama.cpp -G Ninja \
+            -DGGML_CUDA=ON \
+            -DCMAKE_CUDA_ARCHITECTURES=80 \
+            -DGGML_NATIVE=OFF \
+            -DLLAMA_CURL=OFF \
+            -DCMAKE_BUILD_TYPE=Release
+        cmake --build /build/llama.cpp --target \
+            llama-cli llama-server llama-quantize --parallel "$(nproc)"
+
+    - name: Package runtime bundle
+        run: |
+        mkdir -p "dist/${ARTIFACT_NAME}/bin" "dist/${ARTIFACT_NAME}/lib"
+        cp /build/llama.cpp/bin/llama-cli "dist/${ARTIFACT_NAME}/bin/"
+        cp /build/llama.cpp/bin/llama-server "dist/${ARTIFACT_NAME}/bin/"
+        cp /build/llama.cpp/bin/llama-quantize "dist/${ARTIFACT_NAME}/bin/"
+        CUDA_LIB=/usr/local/cuda/targets/x86_64-linux/lib
+        cp -a "${CUDA_LIB}"/libcudart.so.12* "dist/${ARTIFACT_NAME}/lib/"
+        cp -a "${CUDA_LIB}"/libcublas.so.12* "dist/${ARTIFACT_NAME}/lib/"
+        cp -a "${CUDA_LIB}"/libcublasLt.so.12* "dist/${ARTIFACT_NAME}/lib/"
+        cp -a "${CUDA_LIB}"/libnvJitLink.so.12* "dist/${ARTIFACT_NAME}/lib/"
+        tar -C dist -czf "${ARTIFACT_NAME}.tar.gz" "${ARTIFACT_NAME}"
+        tar -tzf "${ARTIFACT_NAME}.tar.gz" >/dev/null
+
+    - name: Upload binary bundle
+        uses: actions/upload-artifact@v4
+        with:
+        name: llama-cpp-cuda12-ampere80
+        path: llama-cpp-cuda12-ampere80.tar.gz
+        if-no-files-found: error
+        retention-days: 14
