@@ -42,6 +42,8 @@ jobs:
             -DCMAKE_EXE_LINKER_FLAGS=-Wl,-rpath-link,/usr/local/cuda/targets/x86_64-linux/lib/stubs \
             -DGGML_NATIVE=OFF \
             -DLLAMA_CURL=OFF \
+            -DLLAMA_BUILD_UI=OFF \
+            -DLLAMA_USE_PREBUILT_UI=OFF \
             -DCMAKE_BUILD_TYPE=Release
           cmake --build /build/llama.cpp --target \
             llama-cli llama-server llama-quantize --parallel "$(nproc)"
