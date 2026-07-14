@@ -25,7 +25,7 @@ jobs:
         run: |
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            ca-certificates cmake g++ git make ninja-build
+            ca-certificates cmake g++ git make ninja-build patchelf
           rm -rf /var/lib/apt/lists/*
 
       - name: Fetch pinned llama.cpp source
@@ -48,24 +48,75 @@ jobs:
           cmake --build /build/llama.cpp --target \
             llama-cli llama-server llama-quantize --parallel "$(nproc)"
 
-      - name: Package runtime bundle
+      - name: Package and verify complete runtime bundle
         run: |
-          mkdir -p "dist/${ARTIFACT_NAME}/bin" "dist/${ARTIFACT_NAME}/lib"
-          cp /build/llama.cpp/bin/llama-cli "dist/${ARTIFACT_NAME}/bin/"
-          cp /build/llama.cpp/bin/llama-server "dist/${ARTIFACT_NAME}/bin/"
-          cp /build/llama.cpp/bin/llama-quantize "dist/${ARTIFACT_NAME}/bin/"
-          CUDA_LIB=/usr/local/cuda/targets/x86_64-linux/lib
-          cp -a "${CUDA_LIB}"/libcudart.so.12* "dist/${ARTIFACT_NAME}/lib/"
-          cp -a "${CUDA_LIB}"/libcublas.so.12* "dist/${ARTIFACT_NAME}/lib/"
-          cp -a "${CUDA_LIB}"/libcublasLt.so.12* "dist/${ARTIFACT_NAME}/lib/"
-          cp -a "${CUDA_LIB}"/libnvJitLink.so.12* "dist/${ARTIFACT_NAME}/lib/"
-          tar -C dist -czf "${ARTIFACT_NAME}.tar.gz" "${ARTIFACT_NAME}"
-          tar -tzf "${ARTIFACT_NAME}.tar.gz" >/dev/null
+          set -eu
+          BUNDLE="dist/${ARTIFACT_NAME}"
+          mkdir -p "${BUNDLE}/bin" "${BUNDLE}/lib"
 
-      - name: Upload binary bundle
+          cp /build/llama.cpp/bin/llama-cli "${BUNDLE}/bin/"
+          cp /build/llama.cpp/bin/llama-server "${BUNDLE}/bin/"
+          cp /build/llama.cpp/bin/llama-quantize "${BUNDLE}/bin/"
+
+          for library in /build/llama.cpp/bin/*.so*; do
+            if [ -f "${library}" ] && [ ! -L "${library}" ]; then
+              patchelf --set-rpath '$ORIGIN' "${library}"
+            fi
+          done
+          cp -a /build/llama.cpp/bin/*.so* "${BUNDLE}/lib/"
+
+          CUDA_LIB=/usr/local/cuda/targets/x86_64-linux/lib
+          cp -a "${CUDA_LIB}"/libcudart.so.12* "${BUNDLE}/lib/"
+          cp -a "${CUDA_LIB}"/libcublas.so.12* "${BUNDLE}/lib/"
+          cp -a "${CUDA_LIB}"/libcublasLt.so.12* "${BUNDLE}/lib/"
+          cp -a "${CUDA_LIB}"/libnvJitLink.so.12* "${BUNDLE}/lib/"
+
+          for library in /usr/lib/x86_64-linux-gnu/libnccl.so*; do
+            if [ -e "${library}" ]; then
+              cp -a "${library}" "${BUNDLE}/lib/"
+            fi
+          done
+
+          for executable in "${BUNDLE}"/bin/*; do
+            patchelf --set-rpath '$ORIGIN/../lib' "${executable}"
+          done
+
+          cp source-commit.txt "${BUNDLE}/"
+          {
+            echo "llama.cpp ref: ${LLAMA_CPP_REF}"
+            echo "CUDA toolkit: 12.4.1"
+            echo "CUDA architecture: sm_80"
+            echo "glibc baseline: Ubuntu 22.04"
+          } > "${BUNDLE}/BUILD-INFO.txt"
+
+          CUDA_BACKEND="$(find "${BUNDLE}/lib" -type f -name 'libggml-cuda.so.*' | head -n 1)"
+          test -n "${CUDA_BACKEND}"
+          cuobjdump --list-elf "${CUDA_BACKEND}" | tee cuda-architectures.txt
+          grep -q 'sm_80' cuda-architectures.txt
+
+          for executable in "${BUNDLE}"/bin/*; do
+            echo "=== ldd ${executable} ==="
+            REPORT="$(LD_LIBRARY_PATH="${PWD}/${BUNDLE}/lib" ldd "${executable}")"
+            printf '%s\n' "${REPORT}"
+            UNEXPECTED="$(printf '%s\n' "${REPORT}" | grep 'not found' | grep -v 'libcuda.so.1' || true)"
+            test -z "${UNEXPECTED}"
+          done
+
+          tar -C dist -czf "${ARTIFACT_NAME}.tar.gz" "${ARTIFACT_NAME}"
+          gzip -t "${ARTIFACT_NAME}.tar.gz"
+          tar -tzf "${ARTIFACT_NAME}.tar.gz" >/dev/null
+          sha256sum "${ARTIFACT_NAME}.tar.gz" > "${ARTIFACT_NAME}.tar.gz.sha256"
+
+          echo "=== bundle contents ==="
+          find "${BUNDLE}" -maxdepth 2 -type f -exec ls -lh {} \;
+          cat "${ARTIFACT_NAME}.tar.gz.sha256"
+
+      - name: Upload verified runtime bundle
         uses: actions/upload-artifact@v4
         with:
           name: llama-cpp-cuda12-ampere80
-          path: llama-cpp-cuda12-ampere80.tar.gz
+          path: |
+            llama-cpp-cuda12-ampere80.tar.gz
+            llama-cpp-cuda12-ampere80.tar.gz.sha256
           if-no-files-found: error
           retention-days: 14
